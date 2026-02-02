@@ -176,6 +176,10 @@ struct ceres_icp_point2line_mb
 template <typename _T>
 struct ceres_icp_point2plane_mb
 {
+    // yuchan planar feature에서 사용
+    // 왜곡된 점을 그대로 사용하고 m_motion_blur_s에 따라 위치를 다시 계산해서 residual을 구함
+    // 기존 LOAM : undistortion된 point를 사용 -> 그리고 matching
+    // Livox LOAM : 왜곡된 point를 사용 -> matching과정에서 motion_blur_s에 따라 위치 보정(최적화 변수 자체가 왜곡을 핌)
     Eigen::Matrix<_T, 3, 1> m_current_pt;
     Eigen::Matrix<_T, 3, 1> m_target_line_a, m_target_line_b, m_target_line_c;
     Eigen::Matrix<_T, 3, 1> m_unit_vec_ab, m_unit_vec_ac, m_unit_vec_n;
@@ -199,12 +203,14 @@ struct ceres_icp_point2plane_mb
     {
         //assert( motion_blur_s <= 1.5 && motion_blur_s >= 0.0 );
         //assert( motion_blur_s <= 1.01 && motion_blur_s >= 0.0 );
+        // yuchan normal vector 계산
+        // 평면위에 두 벡터 정의 ab, ac
         m_unit_vec_ab = target_line_b - target_line_a;
         m_unit_vec_ab = m_unit_vec_ab / m_unit_vec_ab.norm();
 
         m_unit_vec_ac = target_line_c - target_line_a;
         m_unit_vec_ac = m_unit_vec_ac / m_unit_vec_ac.norm();
-
+        // 외적으로 수직인 법선벡터 계산(n=ab x ac)
         m_unit_vec_n = m_unit_vec_ab.cross( m_unit_vec_ac );
         m_weigh = 1.0;
     };
@@ -218,18 +224,24 @@ struct ceres_icp_point2plane_mb
 
         Eigen::Quaternion<T> q_incre{ _q[ 3 ], _q[ 0 ], _q[ 1 ], _q[ 2 ] };
         Eigen::Matrix<T, 3, 1> t_incre{ _t[ 0 ], _t[ 1 ], _t[ 2 ] };
-
+        // motion blur 보간 논문 수식 4번
+        // 0(시작)~q_incre(끝) 사이를 m_motion_blur_s만큼 보간
+        // Identity(0도)에서 q_incres(총회전)까지 m_motion_blur_s 비율만큼 부드럽게 회전 및 이동시킴
         Eigen::Quaternion<T> q_interpolate = Eigen::Quaternion<T>::Identity().slerp( ( T ) m_motion_blur_s, q_incre );
         Eigen::Matrix<T, 3, 1> t_interpolate = t_incre * T( m_motion_blur_s );
-
+        // p_w = {R_k}*{p_l} + t_k ( P_world = R_start * ( R_interp * P_curr + t_interp ) + t_start )
         Eigen::Matrix<T, 3, 1> pt = m_current_pt.template cast<T>();
         Eigen::Matrix<T, 3, 1> pt_transfromed;
         pt_transfromed = q_last * ( q_interpolate * pt + t_interpolate ) + t_last;
 
+        // yuchan 논문 수식 6번부분
+        // 점과 평면사이 거리 계산
         Eigen::Matrix<T, 3, 1> tar_line_pt_a = m_target_line_a.template cast<T>();
         Eigen::Matrix<T, 3, 1> vec_line_plane_norm = m_unit_vec_n.template cast<T>();
-
+        // vec_ad : 평면위의 한점 a에서 변환된 점 d까지의 벡터거리
         Eigen::Matrix<T, 3, 1> vec_ad = pt_transfromed - tar_line_pt_a;
+        // residual_vec = (P_transfromed - P_a) * n 
+        // vec_ad를 법선벡터로 projection하면 수직거리 나옴
         Eigen::Matrix<T, 3, 1> residual_vec = Eigen_math::vector_project_on_unit_vector( vec_ad, vec_line_plane_norm ) * T( m_weigh );
 
         residual[ 0 ] = residual_vec( 0 ) * T( m_weigh );
