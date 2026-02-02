@@ -1,38 +1,4 @@
-// This is the Lidar Odometry And Mapping (LOAM) for solid-state lidar (for example: livox lidar),
-// which suffer form motion blur due the continously scan pattern and low range of fov.
 
-// Developer: Jiarong Lin  ziv.lin.ljr@gmail.com
-
-//   J. Zhang and S. Singh. LOAM: Lidar Odometry and Mapping in Real-time.
-//     Robotics: Science and Systems Conference (RSS). Berkeley, CA, July 2014.
-
-// Copyright 2013, Ji Zhang, Carnegie Mellon University
-// Further contributions copyright (c) 2016, Southwest Research Institute
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice,
-//    this list of conditions and the following disclaimer.
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from this
-//    software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef LIVOX_LASER_SCAN_HANDLER_HPP
 #define LIVOX_LASER_SCAN_HANDLER_HPP
@@ -140,7 +106,7 @@ class Livox_laser
 
     int   pcl_data_save_index = 0;
 
-    float max_fov = 17; // Edge of circle to main axis
+    float max_fov = 17; // 논문에서 나온 livox의 fov 최대 시야각 17도
     float m_max_edge_polar_pos = 0;
     float m_time_internal_pts = 1.0e-5; // 10us = 1e-5
     float m_cx = 0;
@@ -150,9 +116,9 @@ class Livox_laser
     double m_first_receive_time = -1;
     double m_current_time;
     double m_last_maximum_time_stamp;
-    float thr_corner_curvature = 0.05;
-    float thr_surface_curvature = 0.01;
-    float minimum_view_angle = 10;
+    float thr_corner_curvature = 0.05;  // edge feature threshold
+    float thr_surface_curvature = 0.01; // planar feature threshold
+    float minimum_view_angle = 10;  // minimum view angle to fit plane
     std::vector< Pt_infos >  m_pts_info_vec;
     std::vector< PointType > m_raw_pts_vec;
 #if USE_HASH
@@ -181,7 +147,9 @@ class Livox_laser
         screen_out << "Compile time:  " << __TIME__ << endl;
         screen_out << "Softward version: " << SOFT_WARE_VERSION << endl;
         screen_out << "========= End ========" << endl;
-
+        
+        // max_fov/57.3 = degree -> radian, 17도를 라디안으로 바꿔줌
+        // 편향각이 17도 이상이면 제거함.
         m_max_edge_polar_pos = std::pow( tan( max_fov / 57.3 ) * 1, 2 );
     }
 
@@ -191,6 +159,8 @@ class Livox_laser
         return x * x + y * y;
     }
 
+    // yuchan1 수식1번 x^2 + y^2 + z^2
+    // 논문에서 나온 1번수식에서 distance 구하는 함수(거리의 제곱)
     template < typename T >
     T depth2_xyz( T x, T y, T z )
     {
@@ -342,6 +312,8 @@ class Livox_laser
 
     void eval_point( Pt_infos *pt_info )
     {
+        // yuchan1 수식1번
+        // m_livox_min_allow_dis = 1.0 제곱해서 비교한듯
         if ( pt_info->depth_sq2 < m_livox_min_allow_dis * m_livox_min_allow_dis ) // to close
         {
             //screen_out << "Add mask, id  = " << idx << "  type = e_too_near" << endl;
@@ -405,6 +377,7 @@ class Livox_laser
                 }
                 else
                 {
+                    // yuchan 이웃점 4개(앞뒤로2개씩)의 좌표를 더함 (x,y,z 각각)
                     neighbor_accumulate_xyz[ 0 ] += m_raw_pts_vec[ idx + i ].x + m_raw_pts_vec[ idx - i ].x;
                     neighbor_accumulate_xyz[ 1 ] += m_raw_pts_vec[ idx + i ].y + m_raw_pts_vec[ idx - i ].y;
                     neighbor_accumulate_xyz[ 2 ] += m_raw_pts_vec[ idx + i ].z + m_raw_pts_vec[ idx - i ].z;
@@ -415,36 +388,56 @@ class Livox_laser
             {
                 continue;
             }
-
+            // yuchan 이웃점
+            // 더한좌표값에서 (이웃점 개수 * 2) * 현재점 좌표값을 뺌 (현재점 좌표값 2번 빼주는 효과. x,y,z 각각)
+            // neighbor_accumulate_xyz = sum( p_i ) - N*2*p_c
             neighbor_accumulate_xyz[ 0 ] -= curvature_ssd_size * 2 * m_raw_pts_vec[ idx ].x;
             neighbor_accumulate_xyz[ 1 ] -= curvature_ssd_size * 2 * m_raw_pts_vec[ idx ].y;
             neighbor_accumulate_xyz[ 2 ] -= curvature_ssd_size * 2 * m_raw_pts_vec[ idx ].z;
+            // yuchan
+            // 제곱해서 더함 -> 수식1번(유클리드 거리 제곱)
             m_pts_info_vec[ idx ].curvature = neighbor_accumulate_xyz[ 0 ] * neighbor_accumulate_xyz[ 0 ] + neighbor_accumulate_xyz[ 1 ] * neighbor_accumulate_xyz[ 1 ] +
                                               neighbor_accumulate_xyz[ 2 ] * neighbor_accumulate_xyz[ 2 ];
 
             /*********** Compute plane angle ************/
+            // yuchan3 viewing angle 계산 수식3번(theta)
+            // vec_a : 현재점에서 레이저센서로 향하는 벡터. 원점(0,0,0)에서 현재점(idx)으로 향하는 벡터 (원점 -> 현재점)
             Eigen::Matrix< float, 3, 1 > vec_a( m_raw_pts_vec[ idx ].x, m_raw_pts_vec[ idx ].y, m_raw_pts_vec[ idx ].z );
+            // vec_b : 현재점에서 앞뒤 이웃점으로 향하는 벡터. 평면의 방향벡터(p_a - p_c) figure6번 그림 (뒤쪽점 -> 앞쪽점)
+            // 현재점 idx+2랑 뒤 idx-2 점으로 향하는 벡터. 평면의 방향벡터(p_a - p_c) figure6번 그림
+            // p_a = idx + 2(앞쪽 2번째점), p_c = idx -2(뒤쪽 2번째점)
             Eigen::Matrix< float, 3, 1 > vec_b( m_raw_pts_vec[ idx + curvature_ssd_size ].x - m_raw_pts_vec[ idx - curvature_ssd_size ].x,
                                                 m_raw_pts_vec[ idx + curvature_ssd_size ].y - m_raw_pts_vec[ idx - curvature_ssd_size ].y,
                                                 m_raw_pts_vec[ idx + curvature_ssd_size ].z - m_raw_pts_vec[ idx - curvature_ssd_size ].z );
+            // Eigen_math::vector_angle 함수가 내부적으로 내적(Dot Product)과 acos를 수행하여 각도를 구함.
+            // radian -> degree 변환 위해 57.3 곱함                                    
             m_pts_info_vec[ idx ].view_angle = Eigen_math::vector_angle( vec_a  , vec_b, 1 ) * 57.3;
 
             //printf( "Idx = %d, angle = %.2f\r\n", idx,  m_pts_info_vec[ idx ].view_angle );
+            // minimum_view_angle = 10도 이상인 점들에 대해서만 특징점으로 선정
+            // 근데 논문에서는 5도면 버린다고했는데 코드는 10도로 설정했음
             if ( m_pts_info_vec[ idx ].view_angle > minimum_view_angle )
             {
-
+                // yuchan feature 선정
+                // planar feature 선정(0.01)보다 작으면 planar feature로 선정
                 if( m_pts_info_vec[ idx ].curvature < thr_surface_curvature )
                 {
                     m_pts_info_vec[ idx ].pt_label |= e_label_surface;
                 }
 
                 float sq2_diff = 0.1;
-
+                // yuchan feature 선정
+                // e_label_corner는 입사각(10도이상), 곡률(0.05이상), depth조건(볼록한코너), 허공에뜬 노이즈가 아니라 물체에 붙어있는점.
+                // edge feature 선정(0.05)보다 크면 edge feature로 선정, curvature_ssd_size=2로 설정됨
                 if ( m_pts_info_vec[ idx ].curvature > thr_corner_curvature )
-                {
+                {   
+                    // 내 depth가 왼쪽2번째, 오른쪽2번째보다 작거나 같아야함.
+                    // 제일 센서쪽에 가깝다. 볼록한코너면 센서쪽으로 튀어나온 기둥 같은 형태이므로 이걸 찾을거다
+                    // 비스듬한 경사는 탈락시킴(경사는 한쪽은 가깝고 한쪽은 멀리있음)
                     if ( m_pts_info_vec[ idx ].depth_sq2 <= m_pts_info_vec[ idx - curvature_ssd_size ].depth_sq2 &&
-                         m_pts_info_vec[ idx ].depth_sq2 <= m_pts_info_vec[ idx + curvature_ssd_size ].depth_sq2 )
+                            m_pts_info_vec[ idx ].depth_sq2 <= m_pts_info_vec[ idx + curvature_ssd_size ].depth_sq2 )
                     {
+                        // 내depth랑 이웃점의 depth의 차이가 sq2_diff(0.1) 미만인 쪽이 한쪽이라도 있어야한다.
                         if ( abs( m_pts_info_vec[ idx ].depth_sq2 - m_pts_info_vec[ idx - curvature_ssd_size ].depth_sq2 ) < sq2_diff * m_pts_info_vec[ idx ].depth_sq2 ||
                              abs( m_pts_info_vec[ idx ].depth_sq2 - m_pts_info_vec[ idx + curvature_ssd_size ].depth_sq2 ) < sq2_diff * m_pts_info_vec[ idx ].depth_sq2 )
                             m_pts_info_vec[ idx ].pt_label |= e_label_corner;
@@ -482,9 +475,9 @@ class Livox_laser
             m_last_maximum_time_stamp = pt_info->time_stamp;
             m_input_points_size++;
 
-            if ( !std::isfinite( laserCloudIn.points[ idx ].x ) ||
-                 !std::isfinite( laserCloudIn.points[ idx ].y ) ||
-                 !std::isfinite( laserCloudIn.points[ idx ].z ) )
+            if (!std::isfinite( laserCloudIn.points[ idx ].x ) ||
+                !std::isfinite( laserCloudIn.points[ idx ].y ) ||
+                !std::isfinite( laserCloudIn.points[ idx ].z ) )
             {
                 add_mask_of_point( pt_info, e_pt_nan );
                 continue;
@@ -512,16 +505,23 @@ class Livox_laser
             }
 
             m_map_pt_idx.insert( std::make_pair( laserCloudIn.points[ idx ], pt_info ) );
-
+            // yuchan1 수식1번 
+            // 논문 수식1번 구현부분 D^2 = x^2 + y^2 + z^2. 근데 루트는 씌우지않은값
+            // 제곱 연산이 비싸기 때문에 제곱근은 나중에 필요할때 씌우는 방식으로 구현한듯
             pt_info->depth_sq2 = depth2_xyz( laserCloudIn.points[ idx ].x, laserCloudIn.points[ idx ].y, laserCloudIn.points[ idx ].z );
-
+            // yuchan2 수식2번
+            // 논문 수식2번 구현부분, 편향각 구하는 부분
             pt_info->pt_2d_img << laserCloudIn.points[ idx ].y / laserCloudIn.points[ idx ].x, laserCloudIn.points[ idx ].z / laserCloudIn.points[ idx ].x;
+            // 논문 수식2번에서 구한 편향각의 제곱값. 결과: (y/x)^2 + (z/x)^2 = (y^2 + z^2) / x^2
             pt_info->polar_dis_sq2 = dis2_xy( pt_info->pt_2d_img( 0 ), pt_info->pt_2d_img( 1 ) );
 
             eval_point( pt_info );
 
+            // yuchan2 수식2번을 이용한 필터링
+            // 편향각이 17도 이상이면 good_points 아니라고 tagging함. 
+            // e_pt_circle_edge : bad points라는 마스크를 붙여줌. 이웃점 앞뒤로 2개씩도 같이 제거
             if ( pt_info->polar_dis_sq2 > m_max_edge_polar_pos )
-            {
+            {   
                 add_mask_of_point( pt_info, e_pt_circle_edge, 2 );
             }
 

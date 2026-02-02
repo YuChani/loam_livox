@@ -18,20 +18,31 @@
 // Plane to Plane ICP
 
 //p2p with motion deblur
+
+// yuchan summary
+// point-to-point : 현재점 currren_pt를 회전,이동시켜서 최근접점 closest_pt와의 차이를 최소화
+// point-to-line : 현재점 currren_pt를 회전,이동시켜서 최근접점 closest_pt_a, closest_pt_b를 잇는 선분과의 거리를 최소화
+// edge feature에서 사용
+// point-to-plane : 현재점 currren_pt를 회전,이동시켜서 최근접점 closest_pt와 그 점의 법선벡터 normal_vec이 정의하는 평면과의 거리를 최소화
+// planar feature에서 사용
+
 template <typename _T>
 struct ceres_icp_point2point_mb
 {
-    Eigen::Matrix<_T, 3, 1> m_current_pt;
-    Eigen::Matrix<_T, 3, 1> m_closest_pt;
-    _T m_motion_blur_s;
-    Eigen::Matrix<_T, 4, 1> m_q_last;
-    Eigen::Matrix<_T, 3, 1> m_t_last;
-    _T m_weigh;
+    // yuchan
+    // 입력 데이터
+    Eigen::Matrix<_T, 3, 1> m_current_pt;   // 현재 LiDAR좌표계에서의 점
+    Eigen::Matrix<_T, 3, 1> m_closest_pt;   // 타겟(world) 좌표계에서의 최근접점
+    _T m_motion_blur_s;                    // 점이 찍힌 시간 비율. 모션 블러 계수 (0~1)
+    // 기준 포즈
+    Eigen::Matrix<_T, 4, 1> m_q_last;   // 스캔 시작 시점의 회전. 이전 프레임의 LiDAR->world 회전 (쿼터니언)
+    Eigen::Matrix<_T, 3, 1> m_t_last;   // 스캔 시작 시점의 병진. 이전 프레임의 LiDAR->world 병진
+    _T m_weigh;                          // 가중치
     ceres_icp_point2point_mb( const Eigen::Matrix<_T, 3, 1> current_pt,
-                           const Eigen::Matrix<_T, 3, 1> closest_pt,
-                           const _T &motion_blur_s = 1.0,
-                           Eigen::Matrix<_T, 4, 1> q_s = Eigen::Matrix<_T, 4, 1>( 1, 0, 0, 0 ),
-                           Eigen::Matrix<_T, 3, 1> t_s = Eigen::Matrix<_T, 3, 1>( 0, 0, 0 ) ) : m_current_pt( current_pt ),
+                            const Eigen::Matrix<_T, 3, 1> closest_pt,
+                            const _T &motion_blur_s = 1.0,
+                            Eigen::Matrix<_T, 4, 1> q_s = Eigen::Matrix<_T, 4, 1>( 1, 0, 0, 0 ),
+                            Eigen::Matrix<_T, 3, 1> t_s = Eigen::Matrix<_T, 3, 1>( 0, 0, 0 ) ) : m_current_pt( current_pt ),
                                                                                                 m_closest_pt( closest_pt ),
                                                                                                 m_motion_blur_s( motion_blur_s ),
                                                                                                 m_q_last( q_s ),
@@ -44,13 +55,14 @@ struct ceres_icp_point2point_mb
     template <typename T>
     bool operator()( const T *_q, const T *_t, T *residual ) const
     {
-
         Eigen::Quaternion<T> q_last{ ( T ) m_q_last( 0 ), ( T ) m_q_last( 1 ), ( T ) m_q_last( 2 ), ( T ) m_q_last( 3 ) };
         Eigen::Matrix<T, 3, 1> t_last = m_t_last.template cast<T>();
-
+        // yuchan point-to-point-mb 핵심 계산 부분
+        // _q(회전량), _t(이동량) : 이번 스캔시간 동안 로봇이 움직인 회전량과 이동량
         Eigen::Quaternion<T> q_incre{ _q[ 3 ], _q[ 0 ], _q[ 1 ], _q[ 2 ] };
         Eigen::Matrix<T, 3, 1> t_incre{ _t[ 0 ], _t[ 1 ], _t[ 2 ] };
-
+        // 모션 블러 계수(motion_blur_s)만큼 회전량과 이동량을 보간(interpolate)
+        // Identity(0도)에서 q_incres(총회전)까지 m_motion_blur_s 비율만큼 부드럽게 회전 및 이동시킴
         Eigen::Quaternion<T> q_interpolate = Eigen::Quaternion<T>::Identity().slerp( ( T ) m_motion_blur_s, q_incre );
         Eigen::Matrix<T, 3, 1> t_interpolate = t_incre * T( m_motion_blur_s );
 
@@ -58,6 +70,7 @@ struct ceres_icp_point2point_mb
         Eigen::Matrix<T, 3, 1> pt_transfromed;
         pt_transfromed = q_last * ( q_interpolate * pt + t_interpolate ) + t_last;
 
+        // point-to-point residual 계산 r=||p_transfromed - m_closest_pt||
         residual[ 0 ] = ( pt_transfromed( 0 ) - T( m_closest_pt( 0 ) ) ) * T( m_weigh );
         residual[ 1 ] = ( pt_transfromed( 1 ) - T( m_closest_pt( 1 ) ) ) * T( m_weigh );
         residual[ 2 ] = ( pt_transfromed( 2 ) - T( m_closest_pt( 2 ) ) ) * T( m_weigh );
@@ -71,7 +84,7 @@ struct ceres_icp_point2point_mb
                                         Eigen::Matrix<_T, 3, 1> t_s = Eigen::Matrix<_T, 3, 1>( 0, 0, 0 ) )
     {
         return ( new ceres::AutoDiffCostFunction<
-                 ceres_icp_point2point_mb, 3, 4, 3>(
+                    ceres_icp_point2point_mb, 3, 4, 3>(
             new ceres_icp_point2point_mb( current_pt, closest_pt, motion_blur_s ) ) );
     }
 };
@@ -80,7 +93,11 @@ struct ceres_icp_point2point_mb
 template <typename _T>
 struct ceres_icp_point2line_mb
 {
-    Eigen::Matrix<_T, 3, 1> m_current_pt;
+    // yuchan edge feature에서 사용
+    // 왜곡된 점을 그대로 사용하고 m_motion_blur_s에 따라 위치를 다시 계산해서 residual을 구함
+    // 기존 LOAM : undistortion된 point를 사용 -> 그리고 matching
+    // Livox LOAM : 왜곡된 point를 사용 -> matching과정에서 motion_blur_s에 따라 위치 보정(최적화 변수 자체가 왜곡을 핌)
+    Eigen::Matrix<_T, 3, 1> m_current_pt;   
     Eigen::Matrix<_T, 3, 1> m_target_line_a, m_target_line_b;
     Eigen::Matrix<_T, 3, 1> m_unit_vec_ab;
     _T m_motion_blur_s;
@@ -88,15 +105,15 @@ struct ceres_icp_point2line_mb
     Eigen::Matrix<_T, 3, 1> m_t_last;
     _T m_weigh;
     ceres_icp_point2line_mb( const Eigen::Matrix<_T, 3, 1> &current_pt,
-                          const Eigen::Matrix<_T, 3, 1> &target_line_a,
-                          const Eigen::Matrix<_T, 3, 1> &target_line_b,
-                          const _T motion_blur_s = 1.0,
-                          Eigen::Matrix<_T, 4, 1> q_s = Eigen::Matrix<_T, 4, 1>( 1, 0, 0, 0 ),
-                          Eigen::Matrix<_T, 3, 1> t_s = Eigen::Matrix<_T, 3, 1>( 0, 0, 0 ) ) : m_current_pt( current_pt ), m_target_line_a( target_line_a ),
-                                                                                               m_target_line_b( target_line_b ),
-                                                                                               m_motion_blur_s( motion_blur_s ),
-                                                                                               m_q_last( q_s ),
-                                                                                               m_t_last( t_s )
+                            const Eigen::Matrix<_T, 3, 1> &target_line_a,
+                            const Eigen::Matrix<_T, 3, 1> &target_line_b,
+                            const _T motion_blur_s = 1.0,
+                            Eigen::Matrix<_T, 4, 1> q_s = Eigen::Matrix<_T, 4, 1>( 1, 0, 0, 0 ),
+                            Eigen::Matrix<_T, 3, 1> t_s = Eigen::Matrix<_T, 3, 1>( 0, 0, 0 ) ) : m_current_pt( current_pt ), m_target_line_a( target_line_a ),
+                                                                                                m_target_line_b( target_line_b ),
+                                                                                                m_motion_blur_s( motion_blur_s ),
+                                                                                                m_q_last( q_s ),
+                                                                                                m_t_last( t_s )
     {
         m_unit_vec_ab = target_line_b - target_line_a;
         m_unit_vec_ab = m_unit_vec_ab / m_unit_vec_ab.norm();
@@ -109,23 +126,31 @@ struct ceres_icp_point2line_mb
 
         Eigen::Quaternion<T> q_last{ ( T ) m_q_last( 0 ), ( T ) m_q_last( 1 ), ( T ) m_q_last( 2 ), ( T ) m_q_last( 3 ) };
         Eigen::Matrix<T, 3, 1> t_last = m_t_last.template cast<T>();
-
+        // 최적화 변수 부분 _q, _t : 이번 스캔시간 동안 로봇이 움직인 회전량과 이동량
         Eigen::Quaternion<T> q_incre{ _q[ 3 ], _q[ 0 ], _q[ 1 ], _q[ 2 ] };
         Eigen::Matrix<T, 3, 1> t_incre{ _t[ 0 ], _t[ 1 ], _t[ 2 ] };
-
+        // motion blur 보간. 로봇이 움직이는 중이므로, point가 찍힌 시간 m_motion_blur_s에 따라 회전/이동 보간
+        // 0(시작)~q_incre(끝) 사이를 m_motion_blur_s만큼 보간
         Eigen::Quaternion<T> q_interpolate = Eigen::Quaternion<T>::Identity().slerp( ( T ) m_motion_blur_s, q_incre );
+        // 이동량도 m_motion_blur_s만큼 보간 총이동량 * m_motion_blur_s
         Eigen::Matrix<T, 3, 1> t_interpolate = t_incre * T( m_motion_blur_s );
 
+        // yuchan 좌표변환 부분(현재점 -> world)
+        // p_w = {R_k}*{p_l} + t_k ( P_world = R_start * ( R_interp * P_curr + t_interp ) + t_start )
         Eigen::Matrix<T, 3, 1> pt = m_current_pt.template cast<T>();
         Eigen::Matrix<T, 3, 1> pt_transfromed;
         pt_transfromed = q_last * ( q_interpolate * pt + t_interpolate ) + t_last;
 
+        // 논문 수식5번(edge residual 계산)
+        // 점과 직선 사이의 거리 계산
         Eigen::Matrix<T, 3, 1> tar_line_pt_a = m_target_line_a.template cast<T>();
         Eigen::Matrix<T, 3, 1> vec_line_ab_unit = m_unit_vec_ab.template cast<T>();
-
-        Eigen::Matrix<T, 3, 1> vec_ac = pt_transfromed - tar_line_pt_a;
+        // vec_ac : 직선시작점a에서 변환된 점 c까지의 벡터
+        Eigen::Matrix<T, 3, 1> vec_ac = pt_transfromed - tar_line_pt_a; 
+        // residual_vec : vec_ac에서 vec_line_ab_unit에 사영(projection)된 벡터를 뺀 나머지 벡터
+        // 벡터ac - (벡터ac를 ab방향으로 projection한 성분) = 수직성분
         Eigen::Matrix<T, 3, 1> residual_vec = vec_ac - Eigen_math::vector_project_on_unit_vector( vec_ac, vec_line_ab_unit );
-
+        // residual 벡터를 가중치 m_weigh만큼 곱해서 반환. 0으로 하는것이 목표인 cost함수
         residual[ 0 ] = residual_vec( 0 ) * T( m_weigh );
         residual[ 1 ] = residual_vec( 1 ) * T( m_weigh );
         residual[ 2 ] = residual_vec( 2 ) * T( m_weigh );
@@ -142,7 +167,7 @@ struct ceres_icp_point2line_mb
     {
         // TODO: can be vector or distance
         return ( new ceres::AutoDiffCostFunction<
-                 ceres_icp_point2line_mb, 3, 4, 3>(
+                    ceres_icp_point2line_mb, 3, 4, 3>(
             new ceres_icp_point2line_mb( current_pt, target_line_a, target_line_b, motion_blur_s, q_last, t_last ) ) );
     }
 };
@@ -159,13 +184,13 @@ struct ceres_icp_point2plane_mb
     Eigen::Matrix<_T, 4, 1> m_q_last;
     Eigen::Matrix<_T, 3, 1> m_t_last;
     ceres_icp_point2plane_mb( const Eigen::Matrix<_T, 3, 1> &current_pt,
-                           const Eigen::Matrix<_T, 3, 1> &target_line_a,
-                           const Eigen::Matrix<_T, 3, 1> &target_line_b,
-                           const Eigen::Matrix<_T, 3, 1> &target_line_c,
-                           const _T motion_blur_s = 1.0,
-                           Eigen::Matrix<_T, 4, 1> q_s = Eigen::Matrix<_T, 4, 1>( 1, 0, 0, 0 ),
-                           Eigen::Matrix<_T, 3, 1> t_s = Eigen::Matrix<_T, 3, 1>( 0, 0, 0 ) ) : m_current_pt( current_pt ), m_target_line_a( target_line_a ),
-                                                                                                m_target_line_b( target_line_b ),
+                            const Eigen::Matrix<_T, 3, 1> &target_line_a,
+                            const Eigen::Matrix<_T, 3, 1> &target_line_b,
+                            const Eigen::Matrix<_T, 3, 1> &target_line_c,
+                            const _T motion_blur_s = 1.0,
+                            Eigen::Matrix<_T, 4, 1> q_s = Eigen::Matrix<_T, 4, 1>( 1, 0, 0, 0 ),
+                            Eigen::Matrix<_T, 3, 1> t_s = Eigen::Matrix<_T, 3, 1>( 0, 0, 0 ) ) : m_current_pt( current_pt ), m_target_line_a( target_line_a ),
+                                                                                                    m_target_line_b( target_line_b ),
                                                                                                 m_target_line_c( target_line_c ),
                                                                                                 m_motion_blur_s( motion_blur_s ),
                                                                                                 m_q_last( q_s ),
