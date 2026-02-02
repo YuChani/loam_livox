@@ -25,6 +25,11 @@
 // edge feature에서 사용
 // point-to-plane : 현재점 currren_pt를 회전,이동시켜서 최근접점 closest_pt와 그 점의 법선벡터 normal_vec이 정의하는 평면과의 거리를 최소화
 // planar feature에서 사용
+// _mb있는거랑 없는거 차이점은 모션 블러 보정 유무. m_motion_blur_s로 시간에 따라 회전/이동을 보간한거랑 아닌거 차이로 
+// _mb 없는 부분은 q_incre, t_incre를 그대로 사용. _mb있는 부분은 m_motion_blur_s로 보간한 q_interpolate, t_interpolate 사용
+// 요약하면
+// _mb 없는거 : undistortion된 point 사용(기존 LOAM 방식으로 이미 다 보정되었거나 멈춰서 찍은거이므로, 그냥 그대로사용 일반적인 ICP)
+// _mb 있는거 : 왜곡된 point 사용. m_motion_blur_s에 따라 위치 보정(로봇이 움직이면서 스캔한 데이터이므로, point마다 찍힌 시간을 따져서 undistortion함. LiDAR Odometry가 핵심)
 
 template <typename _T>
 struct ceres_icp_point2point_mb
